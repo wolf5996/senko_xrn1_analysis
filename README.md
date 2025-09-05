@@ -1,5 +1,5 @@
 
-# analysis_repo
+# XRN1 Analysis
 
 * This is my analysis repo for Senko, and the focus of this analysis is to identify DE modules between XRN1 KO and WT
 
