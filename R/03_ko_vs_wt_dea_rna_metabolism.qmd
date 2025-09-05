@@ -1,0 +1,695 @@
+---
+title: "WT vs KO: RNA Metabolism Hunt"
+author: Badran Elshenawy
+date: 2025-08-14T14:00:00Z
+format:
+  html:
+    theme: darkly
+    toc: true
+    title-block-banner: true
+    self-contained: true
+---
+
+# Context
+
+-   The goal of this analysis is to identify differentially expressed genes (DEGs) between wild-type (WT) and knockout (KO) samples, focusing on RNA metabolism
+
+    -   I will apply a filter to remove genes with low counts across all samples, as these are unlikely to be biologically relevant
+
+    -   I will then go through the standard DESeq2 pipeline and then do enrichment analysis on DEGs using GSEA and every available method
+
+-   Simple analysis so should be quite easy to run
+
+    -   Need to wrangle the input file a bit first because the original I got was an xls that does not open normally in excel and convert gene names to dates
+
+        -   Did the conversion to csv using ssconvert
+
+-   Only downside of this pipeline is that I did not spend some time to generate QC metrics to ensure that my samples are gucci
+
+    -   Mainly stuff like distance and correlation matrices/heatmaps that show that the samples in one group belong to that group and are different from the other group
+
+    -   PCA plots are also nice here
+
+        -   Alas, it is not a priority right now to try and find fault with this data
+
+            -   I am here to wrap up the analysis and get pathways, so that's what I will do
+
+# Equality Checks
+
+-   I am making sure that the count matrix I am using for this analysis contains the same data as the one PB sent me
+
+-   I am pretty sure they do because the first few rows for each column correspond perfectly, so this is a more formal equality check
+
+-   I have downloaded a tool that handles the conversion from xls to csv in the command-line because doing that in Excel results in a catastrophe associated with Excel corrupting my file and changing gene names to ensembl ids
+
+    -   This is `ssconvert`, and it does the job nicely so I am happy to have picked that up
+
+-   I then ran the entire analysis with the new input file, and the results are more or less the same with minor changes throughout
+
+    -   Might be a good time now to start using lab archive to document these progress updates for myself instead of using email for that purpose
+
+```{r}
+# load libraries
+library(tidyverse)
+
+# read data
+pb_version <- read_csv(file = "../read/gene_count_pb.csv")
+senko_version <- read_csv("../read/gene_count_senko.csv")
+
+# columns of interest
+wt_columns <- c("G2_WT_N1", "G2_WT_N2", "G2_WT_N3")
+ko_columns <- c("G2_XRN1KO_1", "G2_XRN1KO_2", "G2_XRN1KO_3")
+
+# save version to be used for further analysis
+pb_version %>% 
+  select(
+    gene_id,
+    all_of(wt_columns),
+    all_of(ko_columns)
+  ) %>% 
+  data.frame() %>% 
+  write_csv(file = "../checkpoints/gene_counts_pb_wrangled.csv")
+
+```
+
+# DEA
+
+-   Quick note on filtration below
+
+    -   What this code is doing is removing genes that do not have at least 10 counts per sample in at least 5 samples
+
+        -   This is a very good filter that ensures sparse genes are out of the picture
+
+```{r}
+# load required libraries
+library(DESeq2)
+library(readr)
+library(tibble)
+library(dplyr)
+
+# handle conflicts
+conflicted::conflict_prefer("filter", "dplyr")
+
+# read data
+count_matrix <- read_csv("../checkpoints/gene_counts_pb_wrangled.csv") %>% 
+  column_to_rownames("gene_id")
+
+metadata <- read_csv("../read/metadata.csv") %>% 
+  column_to_rownames("...1")
+
+# wrangle metadata
+metadata <- metadata %>% 
+  mutate(
+    group = factor(group, levels = c("WT", "KO")),
+    replicate = factor(replicate, levels = c("1", "2", "3"))
+  )
+
+# sanity check
+all(colnames(count_matrix) %in% rownames(metadata))
+all(colnames(count_matrix) == rownames(metadata))
+
+# create DESeqDataSet object
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = metadata,
+  design = ~ replicate + group
+)
+
+# filter low count genes
+dim(dds) # 58735
+smallestGroupSize <- 5
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+dim(dds) # 15161
+
+# run DESeq2 analysis
+dds <- DESeq(dds)
+
+# extract results for KO vs WT comparison
+results_KO_vs_WT <- results(
+  dds, 
+  contrast = c("group", "KO", "WT"),
+  alpha = 0.05
+)
+
+# summary of results
+summary(results_KO_vs_WT)
+
+# convert to data frame and clean
+results_df <- as.data.frame(results_KO_vs_WT) %>%
+  rownames_to_column("gene_id") %>%
+  filter(!is.na(padj))
+
+# save results to file
+write_csv(
+  x = results_df, 
+  file = "../write/tables/DESeq2_results_KO_vs_WT.csv"
+)
+
+# save dds for later use
+write_rds(
+  x = dds,
+  file = "../checkpoints/xrn1_ko_vs_wt_dds.rds",
+  compress = "gz"
+)
+```
+
+# QC Plots
+
+## PCA
+
+-   PCA plots and correlation/distance heatmaps to make sure we have no systemic issues with the data
+
+-   The PCA function offered here is truly horrendous, and so I will create one with superior aesthetic in my package
+
+    -   I am using my own function now, and it is a small improvement but still not the best
+
+    -   I am using the default right now and keeping the function I created in my own package whilst I work on a method to make it better
+
+```{r}
+# libraries
+library(tidyverse)
+library(DESeq2)
+library(patchwork)
+library(BadranSeq)
+  
+# conflicts
+conflicted::conflict_prefer("select", "dplyr")
+conflicted::conflict_prefer("filter", "dplyr")
+
+# imports
+dds <- read_rds(
+  file = "../checkpoints/xrn1_ko_vs_wt_dds.rds"
+)
+
+# add extra metadata column
+dds$group_replicate <- rownames(dds@colData)
+
+# qc with pca plots
+a <- rlog(dds) %>% 
+  plotPCA(
+    intgroup = "group"
+  )
+
+b <- rlog(dds) %>% 
+  plotPCA(
+    intgroup = "replicate"
+  )
+
+# save pca plots for qc checks
+for (format in c("pdf", "png")) {
+  (a / b) %>%
+    ggsave(
+      filename = paste0("../write/figures/qc/pca_plots.", format),
+      height = 10,
+      width = 10,
+      dpi = 300,
+      bg = "white"
+    )
+}
+
+```
+
+## Heatmaps
+
+-   Created this for my post
+
+```{r}
+# libraries
+library(tidyverse)
+library(DESeq2)
+library(patchwork)
+library(BadranSeq)
+library(pheatmap)
+library(RColorBrewer)
+
+# conflicts
+conflicted::conflict_prefer("select", "dplyr")
+conflicted::conflict_prefer("filter", "dplyr")
+
+# imports
+dds <- read_rds(
+  file = "../checkpoints/xrn1_ko_vs_wt_dds.rds"
+)
+
+# add extra metadata column
+dds$group_replicate <- rownames(dds@colData)
+
+# create annotation dataframe FIRST
+annotation_df <- data.frame(
+  group = dds$group,
+  replicate = dds$replicate
+)
+rownames(annotation_df) <- colnames(dds)
+
+# sample distance heatmap (DESeq2 vignette style)
+sampleDists <- rlog(dds) %>%
+  assay() %>%
+  t() %>%
+  dist()
+
+sampleDistMatrix <- as.matrix(sampleDists)
+# make sure row/col names match annotation rownames
+rownames(sampleDistMatrix) <- colnames(dds)
+colnames(sampleDistMatrix) <- colnames(dds)
+
+# sample distance heatmap
+dist_heatmap <- pheatmap(
+  sampleDistMatrix,
+  clustering_distance_rows = sampleDists,
+  clustering_distance_cols = sampleDists,
+  col = colorRampPalette(rev(brewer.pal(9, "Blues")))(255),
+  annotation_row = annotation_df,
+  annotation_col = annotation_df,
+  main = "Sample Distance Heatmap",
+  silent = TRUE
+)
+
+# sample correlation heatmap  
+rld_cor <- rlog(dds) %>%
+  assay() %>%
+  cor()
+
+# make sure row/col names match annotation rownames
+rownames(rld_cor) <- colnames(dds)
+colnames(rld_cor) <- colnames(dds)
+
+cor_heatmap <- pheatmap(
+  rld_cor,
+  col = colorRampPalette(rev(brewer.pal(9, "RdYlBu")))(255),
+  annotation_row = annotation_df,
+  annotation_col = annotation_df,
+  main = "Sample Correlation Heatmap", 
+  silent = TRUE
+)
+
+# save QC heatmaps
+for (format in c("pdf", "png")) {
+  # distance heatmap
+  ggsave(
+    filename = paste0("../write/figures/qc/sample_distance.", format),
+    plot = dist_heatmap$gtable,
+    height = 8,
+    width = 10,
+    dpi = 300,
+    bg = "white"
+  )
+  
+  # correlation heatmap
+  ggsave(
+    filename = paste0("../write/figures/qc/sample_correlation.", format),
+    plot = cor_heatmap$gtable,
+    height = 8,
+    width = 10, 
+    dpi = 300,
+    bg = "white"
+  )
+}
+```
+
+# Volcano Plot
+
+```{r}
+# load required libraries
+library(EnhancedVolcano)
+library(readr)
+library(dplyr)
+
+# handle conflicts
+conflicted::conflict_prefer("filter", "dplyr")
+conflicted::conflict_prefer("select", "dplyr")
+
+# load DESeq2 results
+results_df <- read_csv(
+  file = "../write/tables/DESeq2_results_KO_vs_WT.csv"
+)
+
+# identify top genes for highlighting
+top_genes <- results_df %>%
+  filter(padj < 0.05, abs(log2FoldChange) > 1) %>%
+  arrange(padj) %>%
+  slice_head(n = 10) %>%
+  pull(gene_id)
+
+# create enhanced volcano plot
+volcano_plot <- EnhancedVolcano(
+  results_df,
+  lab = results_df$gene_id,
+  x = 'log2FoldChange',
+  y = 'padj',
+  selectLab = NA,
+  title = 'Volcano Plot: KO vs WT',
+  subtitle = 'DESeq2 Differential Expression Analysis',
+  pCutoff = 0.05,
+  FCcutoff = 1.0,
+  pointSize = 2.0,
+  labSize = 3.5,
+  colAlpha = 0.7,
+  legendPosition = 'right',
+  legendLabSize = 12,
+  legendIconSize = 4.0,
+  # drawConnectors = TRUE,
+  # widthConnectors = 0.3,
+  # colConnectors = 'grey30',
+  # max.overlaps = 15
+)
+  
+print(volcano_plot)
+
+# save the plot
+for (extension in c("pdf", "png")) {
+  ggsave(
+    filename = paste0(
+      "../write/figures/volcano_plot_KO_vs_WT.",
+      extension
+    ),
+    plot = volcano_plot,
+    width = 20,
+    height = 10,
+    dpi = 300
+  )
+}
+
+```
+
+# ORA
+
+```{r}
+# Load required libraries
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(readr)
+library(dplyr)
+
+# Handling conflicts
+conflicted::conflict_prefer("filter", "dplyr")
+
+# Load DESeq2 results
+results_df <- read_csv(
+  file = "../write/tables/DESeq2_results_KO_vs_WT.csv"
+)
+
+# ORA: GO
+# Define gene sets for ORA
+upregulated_genes <- results_df %>%
+  filter(padj < 0.05, log2FoldChange > 0) %>%
+  pull(gene_id)
+
+downregulated_genes <- results_df %>%
+  filter(padj < 0.05, log2FoldChange < 0) %>%
+  pull(gene_id)
+
+# Define universe (all genes tested)
+universe <- results_df$gene_id
+
+# ORA for upregulated genes
+ora_up <- enrichGO(
+  gene = upregulated_genes,
+  universe = universe,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.2,
+  keyType = "SYMBOL",
+  readable = TRUE
+)
+
+# ORA for downregulated genes
+ora_down <- enrichGO(
+  gene = downregulated_genes,
+  universe = universe,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.2,
+  keyType = "SYMBOL",
+  readable = TRUE
+)
+
+# Create dotplots
+dotplot_up <- dotplot(
+  ora_up,
+  showCategory = 30,
+  title = "GO BP Enrichment: Upregulated Genes"
+)
+dotplot_down <- dotplot(
+  ora_down,
+  showCategory = 30,
+  title = "GO BP Enrichment: Downregulated Genes"
+)
+
+# Save dotplots
+ggsave(
+  filename = "../write/figures/dotplot_GO_BP_upregulated.pdf",
+  plot = dotplot_up,
+  width = 10,
+  height = 12
+)
+
+ggsave(
+  filename = "../write/figures/dotplot_GO_BP_downregulated.pdf",
+  plot = dotplot_down,
+  width = 10,
+  height = 15
+)
+
+# Display plots
+print(dotplot_up)
+print(dotplot_down)
+
+# Print summaries
+cat("ORA Results Summary:\n")
+cat("Upregulated genes - enriched terms:", nrow(ora_up@result), "\n")
+cat("Downregulated genes - enriched terms:", nrow(ora_down@result), "\n")
+
+# Display top 5 enriched terms for each analysis
+cat("\nTop 5 enriched GO BP terms (Upregulated genes):\n")
+print(head(ora_up@result[, c("Description", "pvalue", "p.adjust", "Count")], 5))
+
+cat("\nTop 5 enriched GO BP terms (Downregulated genes):\n")
+print(head(ora_down@result[, c("Description", "pvalue", "p.adjust", "Count")], 5))
+```
+
+# GSEA
+
+-   I will do GSEA using GO, KEGG, and reactome and visualize using my custom barplot
+
+    -   I intend to later turn this barplot into one of the most key functions of my package for internal use
+
+-   I had to add a short bit in the conversion step to remove duplicate entrezids
+
+    -   These cause massive issues when doing reactome-based GSEA
+
+-   Used the CSV file and passed them through Claude, which identified all related pathways, recorded NES and leading edge size, and computed leading edge ratio
+
+    -   Leading edge ratio is a metric I came up with that divides the leading edge size by the set size of the entire pathway, thereby indicating how broadly the pathway is impacted in this contrast
+
+-   The visualisation that used to be here is no longer here because it is now part of my first package ever: `BadranSeq`
+
+    -   Very happy to say that and it works beautifully
+
+        -   You can see it referenced down below at the plotting level and I am very happy with it
+
+```{r}
+# load required libraries
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(BadranSeq)
+
+# handle conflicts
+conflicted::conflict_prefer("filter", "dplyr")
+
+# load DESeq2 results
+results_df <- read_csv(
+  file = "../write/tables/DESeq2_results_KO_vs_WT.csv"
+)
+
+# prepare gene list for GSEA
+gene_list <- results_df %>%
+  filter(!is.na(log2FoldChange), !is.na(padj)) %>%
+  arrange(desc(log2FoldChange)) %>%
+  pull(log2FoldChange, name = gene_id)
+
+# convert gene symbols to entrez IDs for KEGG and Reactome
+gene_symbols <- names(gene_list)
+entrez_ids <- bitr(
+  gene_symbols,
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+) %>%
+  filter(
+    !duplicated(ENTREZID)
+  )
+
+# create entrez gene list
+entrez_gene_list <- gene_list[entrez_ids$ENSEMBL]
+names(entrez_gene_list) <- entrez_ids$ENTREZID
+
+# check length of two gene lists
+length(gene_list) # 15165
+length(entrez_gene_list) # 13732
+
+# perform GSEA analyses
+# GO biological process
+gsea_go_bp <- gseGO(geneList = gene_list,
+                    OrgDb = org.Hs.eg.db,
+                    ont = "BP",
+                    keyType = "ENSEMBL",
+                    minGSSize = 15,
+                    maxGSSize = 500,
+                    pvalueCutoff = 0.05,
+                    verbose = FALSE) %>% 
+  setReadable(OrgDb = org.Hs.eg.db, keyType = "ENSEMBL")
+
+# KEGG pathways
+gsea_kegg <- gseKEGG(geneList = entrez_gene_list,
+                     organism = 'hsa',
+                     minGSSize = 15,
+                     maxGSSize = 500,
+                     pvalueCutoff = 0.05,
+                     verbose = FALSE) %>% 
+  setReadable(OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+# Reactome pathways
+gsea_reactome <- gsePathway(geneList = entrez_gene_list,
+                           organism = "human",
+                           minGSSize = 15,
+                           maxGSSize = 500,
+                           pvalueCutoff = 0.05,
+                           verbose = FALSE) %>% 
+  setReadable(OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+# create plots for each analysis
+plot_go_bp <- BadranSeq::create_enhanced_plot(
+  gsea_object = gsea_go_bp,
+  analysis_name = "GO Biological Process"
+)
+plot_kegg <- BadranSeq::create_enhanced_plot(
+  gsea_object = gsea_kegg,
+  analysis_name = "KEGG Pathways"
+)
+plot_reactome <- BadranSeq::create_enhanced_plot(
+  gsea_object = gsea_reactome,
+  analysis_name = "Reactome Pathways"
+)
+
+# display plots
+print(plot_go_bp)
+print(plot_kegg)
+print(plot_reactome)
+
+# save plots
+ggsave(
+  "../write/figures/pea/gsea/gsea_go_bp.pdf",
+  plot_go_bp,
+  width = 16,
+  height = 12
+)
+ggsave(
+  "../write/figures/pea/gsea/gsea_kegg.pdf",
+  plot_kegg,
+  width = 16,
+  height = 12
+)
+ggsave(
+  "../write/figures/pea/gsea/gsea_reactome.pdf",
+  plot_reactome,
+  width = 16,
+  height = 12
+)
+
+# save results to files
+write_csv(
+  gsea_go_bp@result,
+  "../write/tables/pea/gsea/gsea_go_bp_results.csv"
+)
+write_csv(
+  gsea_kegg@result,
+  "../write/tables/pea/gsea/gsea_kegg_results.csv"
+)
+write_csv(
+  gsea_reactome@result,
+  "../write/tables/pea/gsea/gsea_reactome_results.csv"
+)
+
+# save rds of gsea results
+write_rds(
+  gsea_go_bp,
+  "../write/tables/pea/gsea/gsea_go_bp_results.rds",
+  compress = "xz"
+)
+write_rds(
+  gsea_kegg,
+  "../write/tables/pea/gsea/gsea_kegg_results.rds",
+  compress = "xz"
+)
+write_rds(
+  gsea_reactome,
+  "../write/tables/pea/gsea/gsea_reactome_results.rds",
+  compress = "xz"
+)
+```
+
+## Visualisation of Selected Pathways
+
+-   I took my GSEA results to Claude and asked it to summarize the top RNA metabolism-related pathways for me, and that's what it did
+
+-   Here, I am using my package to visualize these selected pathways from Reactome
+
+-   Had to adjust the excel file manually because Claude did not copy the pathway names exactly and had to take two out
+
+    -   The two I took out had no match in the reactome data
+
+-   This analysis prompted me to update my `BadranSeq::create_enhanced_plot()` function by adding a selection argument that would allow me to easily plot selected pathways
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(BadranSeq)
+
+# Import data
+gsea_reactome <- read_rds("../write/tables/pea/gsea/gsea_reactome_results.rds")
+
+rna_metab_pathways <- readxl::read_xlsx(
+  "../write/tables/pea/gsea/rna_metabolism_related_pathways_2.xlsx"
+) %>% 
+  janitor::clean_names()
+
+# Create visualization
+selected_pathways <- rna_metab_pathways %>% 
+  dplyr::filter(source == "REACTOME") %>% 
+  pull(pathway_name)
+
+# Pull information for selected pathways
+gsea_reactome@result %>% 
+  dplyr::filter(Description %in% selected_pathways) %>% 
+  writexl::write_xlsx(
+    x = .,
+    path = "../write/tables/pea/gsea/gsea_reactome_results_rna_metabolism_related_pathways.xlsx"
+  )
+
+
+
+# Visualise selected pathways
+
+BadranSeq::create_enhanced_plot(
+  gsea_object = gsea_reactome,
+  selection = selected_pathways
+) %>% 
+  ggsave(
+    filename = "../write/figures/pea/gsea/gsea_reactome_selected_pathways.pdf",
+    plot = .,
+    width = 16,
+    height = 12
+  )
+```

@@ -1,0 +1,116 @@
+---
+title: "XRN1 analysis"
+author: "Badran Elshenawy"
+date: "2025-04-01"
+format: 
+  html:
+    theme: darkly
+    toc: true
+    toc-depth: 2
+    self-contained: true
+    title-block-banner: true
+---
+
+# Context
+
+-   This is my analysis on XRN1 for Senko. I prefer this over the app because I can control the aesthetics of the figure better.
+    -   The heatmap though will be through the app, so that's all good.
+
+# Packages
+
+```{r}
+# packages
+library(tidyverse)
+library(Seurat)
+library(SeuratDisk)
+library(SeuratObject)
+library(pak)
+library(SCpubr)
+
+# setwd
+setwd(
+  dirname(
+    rstudioapi::getActiveDocumentContext()$path
+  )
+)
+```
+
+# Data
+
+```{r}
+# macparland data import
+macparland_data <- LoadH5Seurat(
+  file = "../geomx_bulk_spatial/analysis_repo/checkpoints/reference_1_macparland_seurat_fully_processed.h5seurat"
+)
+```
+
+# Visualisation
+
+## DimPlots
+
+```{r}
+# Cell Type
+a <- macparland_data %>% 
+  do_DimPlot(
+    reduction = "umap",
+    group.by = "Sample",
+    label = TRUE,
+    plot.axes = T
+  )
+
+b <- macparland_data %>% 
+  do_DimPlot(
+    reduction = "umap",
+    group.by = "CellType",
+    label = TRUE,
+    plot.axes = T
+  )
+
+ggsave(
+  plot = a + b,
+  filename = "write/figures/celltype_sample_umap.pdf",
+  height = 10,
+  width = 20
+)
+```
+
+## FeaturePlots
+
+```{r}
+features <- c(
+  "XRN1",
+  "DCP1A",
+  "DCP2",
+  "EDC4",
+  "DDX6"
+)
+
+figs <- map(
+  features,
+  function(feature){
+    do_FeaturePlot(
+      sample = macparland_data,
+      features = feature,
+      legend.title = feature
+    )
+  }
+) %>% setNames(
+  nm = features
+)
+
+map(
+  names(figs),
+  function(fig_name){
+    ggsave(
+      plot = figs[[fig_name]],
+      filename = paste0(
+        "write/figures/",
+        fig_name,
+        "_FeaturePlot.pdf"
+      ),
+      height = 10,
+      width = 10
+    )
+  }
+)
+```

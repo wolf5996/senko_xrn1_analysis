@@ -1,0 +1,102 @@
+# -------------------------------
+# R-specific files
+# -------------------------------
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+
+# RStudio / renv
+.Rproj.user/
+.Rproj.user/*
+.Rprofile
+.Renviron
+renv/library/
+renv/staging/
+renv/profiles/
+renv/.lock
+# keep renv.lock tracked
+!renv.lock
+
+# httr OAuth tokens
+.httr-oauth
+
+# -------------------------------
+# OS-generated files
+# -------------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------------
+# Quarto / RMarkdown outputs
+# -------------------------------
+*.utf8.md
+*.knit.md
+*.nb.html
+*.html
+*.pdf
+*.docx
+.quarto/
+.Rcheck/
+
+# -------------------------------
+# Data directories (ignored completely)
+# -------------------------------
+read/
+write/
+checkpoints/
+data/
+results/
+cache/
+tmp/
+output/
+logs/
+
+# -------------------------------
+# Common binary data formats (large)
+# -------------------------------
+*.rds
+*.qs
+*.feather
+*.fst
+*.parquet
+*.h5
+*.h5ad
+*.bam
+*.sam
+*.fastq*
+*.fq
+*.vcf*
+*.bed
+*.gz
+*.zip
+*.tar
+*.tar.gz
+
+# -------------------------------
+# Figures / plots (rendered)
+# -------------------------------
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.tiff
+
+# -------------------------------
+# IDE/editor noise
+# -------------------------------
+*.swp
+*.swo
+*.bak
+*~
+.vscode/
+.idea/
+
+# -------------------------------
+# Checkpoints, caches
+# -------------------------------
+*_cache/
+.cache/
+.knitr_cache/
+__pycache__/
