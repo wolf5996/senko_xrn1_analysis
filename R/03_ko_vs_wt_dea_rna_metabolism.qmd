@@ -374,6 +374,8 @@ for (extension in c("pdf", "png")) {
 
 # ORA
 
+## GO
+
 ```{r}
 # Load required libraries
 library(clusterProfiler)
@@ -387,7 +389,7 @@ conflicted::conflict_prefer("filter", "dplyr")
 
 # Load DESeq2 results
 results_df <- read_csv(
-  file = "../write/tables/DESeq2_results_KO_vs_WT.csv"
+  file = "write/tables/DESeq2_results_KO_vs_WT.csv"
 )
 
 # ORA: GO
@@ -471,6 +473,90 @@ print(head(ora_up@result[, c("Description", "pvalue", "p.adjust", "Count")], 5))
 
 cat("\nTop 5 enriched GO BP terms (Downregulated genes):\n")
 print(head(ora_down@result[, c("Description", "pvalue", "p.adjust", "Count")], 5))
+```
+
+## KEGG
+
+-   For the path viewer, it saves directly at root instead of the specified write directory even though it does download the png and xml files needed in the write directory specified
+
+```{r}
+# Load required libraries
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(pathview)
+
+# Load DESeq2 results
+results_df <- read_csv("write/tables/DESeq2_results_KO_vs_WT.csv")
+
+# Convert Ensembl to Entrez IDs
+gene_mapping <- bitr(
+  results_df$gene_id,
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+results_with_entrez <- results_df %>% 
+  left_join(
+    gene_mapping,
+    by = c("gene_id" = "ENSEMBL")
+  )
+
+# Define gene sets
+upregulated_genes <- results_with_entrez %>%
+  filter(padj < 0.05, log2FoldChange > 0, !is.na(ENTREZID)) %>%
+  pull(ENTREZID)
+
+downregulated_genes <- results_with_entrez %>%
+  filter(padj < 0.05, log2FoldChange < 0, !is.na(ENTREZID)) %>%
+  pull(ENTREZID)
+
+universe <- results_with_entrez$ENTREZID[!is.na(results_with_entrez$ENTREZID)]
+
+# KEGG enrichment analysis
+kegg_up <- enrichKEGG(
+  upregulated_genes,
+  universe = universe,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+)
+kegg_down <- enrichKEGG(
+  downregulated_genes,
+  universe = universe,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+)
+
+# Create and save dotplots
+dotplot_up <- dotplot(kegg_up, showCategory = 15, title = "KEGG: Upregulated")
+dotplot_down <- dotplot(kegg_down, showCategory = 15, title = "KEGG: Downregulated")
+
+ggsave("write/figures/kegg_up.pdf", dotplot_up, width = 10, height = 8)
+ggsave("write/figures/kegg_down.pdf", dotplot_down, width = 10, height = 8)
+
+print(dotplot_up)
+print(dotplot_down)
+
+# Show top results
+head(kegg_up@result[, c("Description", "pvalue", "Count")], 3)
+head(kegg_down@result[, c("Description", "pvalue", "Count")], 3)
+
+# Pathway visualization for top result
+foldchanges <- results_with_entrez %>% 
+  dplyr::pull(log2FoldChange, name = ENTREZID)
+
+foldchanges <- foldchanges[!is.na(names(foldchanges))]
+
+pathview(
+  gene.data = foldchanges,
+  pathway.id = kegg_up@result$ID[1],
+  species = "hsa",
+  out.suffix = "_visualization",
+  kegg.dir = "write/figures/pea/ora/kegg/pathview/",
+  res = 300
+)
 ```
 
 # GSEA
