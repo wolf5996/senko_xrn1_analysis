@@ -559,6 +559,122 @@ pathview(
 )
 ```
 
+## Reactome
+
+-   Worked perfectly and the figures look very nice
+
+    -   cnet plots worked well but cmap plots did not work
+
+```{r}
+# Load required libraries
+library(ReactomePA)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(enrichplot)
+library(clusterProfiler)
+
+# Load DESeq2 results
+results_df <- read_csv("write/tables/DESeq2_results_KO_vs_WT.csv")
+
+# Convert Ensembl to Entrez IDs
+gene_mapping <- bitr(
+  results_df$gene_id,
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+results_with_entrez <- results_df %>% 
+  left_join(
+    gene_mapping,
+    by = c("gene_id" = "ENSEMBL")
+  )
+
+# Define gene sets
+upregulated_genes <- results_with_entrez %>%
+  filter(padj < 0.05, log2FoldChange > 0, !is.na(ENTREZID)) %>%
+  pull(ENTREZID)
+
+downregulated_genes <- results_with_entrez %>%
+  filter(padj < 0.05, log2FoldChange < 0, !is.na(ENTREZID)) %>%
+  pull(ENTREZID)
+
+universe <- results_with_entrez$ENTREZID[!is.na(results_with_entrez$ENTREZID)]
+
+# Reactome enrichment analysis
+reactome_up <- enrichPathway(
+  upregulated_genes,
+  universe = universe,
+  organism = "human",
+  pvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+reactome_down <- enrichPathway(
+  downregulated_genes,
+  universe = universe,
+  organism = "human",
+  pvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+
+# Create enrichment maps (different visualization)
+emap_up <- emapplot(
+  reactome_up, 
+  showCategory = 20,
+  layout = "kk",
+  node_scale = 1.5
+) + 
+  ggtitle("Reactome Enrichment Map: Upregulated")
+
+emap_down <- emapplot(
+  reactome_down, 
+  showCategory = 20,
+  layout = "kk",
+  node_scale = 1.5
+) + 
+  ggtitle("Reactome Enrichment Map: Downregulated")
+
+# Alternative: Network plot
+cnet_up <- cnetplot(
+  reactome_up,
+  showCategory = 10,
+  node_label = "category"
+) + 
+  ggtitle("Reactome Network: Upregulated")
+
+cnet_down <- cnetplot(
+  reactome_down,
+  showCategory = 10,
+  node_label = "category"
+) + 
+  ggtitle("Reactome Network: Downregulated")
+
+# Save plots
+ggsave(
+  "write/figures/pea/ora/reactome/reactome_cnet_up.png",
+  cnet_up,
+  width = 12,
+  height = 10,
+  dpi = 300,
+  bg = "white"
+)
+ggsave(
+  "write/figures/pea/ora/reactome/reactome_cnet_down.png",
+  cnet_down,
+  width = 12,
+  height = 10,
+  dpi = 300,
+  bg = "white"
+)
+
+# Show top results
+head(reactome_up@result[, c("Description", "pvalue", "Count")], 3)
+head(reactome_down@result[, c("Description", "pvalue", "Count")], 3)
+```
+
 # GSEA
 
 -   I will do GSEA using GO, KEGG, and reactome and visualize using my custom barplot
